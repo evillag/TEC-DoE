@@ -1,0 +1,447 @@
+---
+title: 'Proyecto 1: Galton Board'
+author: "Esteban Villalobos-Gómez"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Proyecto 1: Galton Board
+
+## Instalación de bibliotecas
+
+```{r imports, echo=FALSE}
+
+if (!require(psych)){install.packages("psych")}
+if (!require(FSA)){install.packages("FSA")}
+if (!require(Rmisc)){install.packages("Rmisc")}
+if (!require(ggplot2)){install.packages("ggplot2")}
+if (!require(car)){install.packages("car")}
+if (!require(multcompView)){install.packages("multcompView")}
+if (!require(multcompView)){install.packages("multcomp")}
+if (!require(lsmeans)){install.packages("lsmeans")}
+if (!require(lsr)){install.packages("rcompanion")}
+if (!require(dplyr)){install.packages("dplyr")}
+if (!require(tidyr)){install.packages("tidyr")}
+if (!require(splitstackshape)){install.packages("splitstackshape")}
+```
+
+## Exploración de los Datos
+
+### Carga de datos
+
+```{r carga_de_datos}
+library(readr)
+Data_raw <- read_csv("datos.csv",
+                 col_types = list(col_integer(),col_character(),col_integer(),
+                                  col_integer(),col_integer(),col_integer(),
+                                  col_integer(),col_integer(),col_integer(),
+                                  col_integer()), 
+                 show_col_types = FALSE)
+```
+
+Conversión de columna Distribución a factor.
+
+```{r}
+Data_raw$Distribucion = factor(
+  Data_raw$Distribucion, 
+  levels = unique(Data_raw$Distribucion))
+```
+
+### Verificación
+
+```{r}
+library(psych)
+headTail(Data_raw)
+```
+
+```{r}
+str(Data_raw)
+```
+
+# Experimento 1: Distribución Normal
+
+```{r verificacion_datos}
+library(dplyr)
+
+normal = Data_raw %>% 
+  filter(Distribucion == "Normal") %>%
+  dplyr::select(C1:C7)
+
+summary(normal)
+```
+
+## Preprocesamiento
+
+Cada fila se divide en múltiples filas, una por contenedor
+
+```{r}
+library(tidyr)
+d1 = gather(normal, Contenedor, "n", 1:7, factor_key=TRUE)
+```
+
+## Visualización de los datos
+
+1### Histograma de promedios
+
+```{r}
+Summarize(n ~ Contenedor,
+          data = d1, digits = 4)
+
+d1_summary = d1 %>%
+  group_by(Contenedor) %>%
+  summarise(avg = mean(n))
+```
+
+```{r}
+barplot(height=d1_summary$avg, names=d1_summary$Contenedor, main = "Medias por contenedor. Exp. 1", xlab = "Contenedor", ylab = "Frecuencia")
+
+```
+
+### Diagrama de cajas
+
+En este gráfico los bigotes representan el rango:
+
+```{r}
+M1 = tapply(d1$n,
+           INDEX = d1$Contenedor,
+           FUN = mean)
+boxplot(n ~ Contenedor, ylab= "Frecuencia",
+        data = d1)
+points(M1, col="red", pch = "+",
+       cex = 2)
+```
+
+### Gráfico de promedios e intervalos de confianza
+
+Cálculo de los intervalos:
+
+```{r}
+library(rcompanion)
+Sum1= groupwiseMean(n ~ Contenedor, data = d1, conf = 0.95, digits = 3, traditional = FALSE, percentile = TRUE)
+Sum1
+```
+
+Gráfico de I.C. (los bigotes representan el intervalo de confianza):
+
+```{r}
+ggplot(Sum1,aes(x = Contenedor, y = Mean)) +
+  geom_errorbar(
+    aes(ymin = Percentile.lower, ymax = Percentile.upper),
+    width = 0.05,
+    size = 0.5
+  ) +
+  geom_point(shape = 15, size = 4) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold")) +
+  ylab("Frecuencia")
+```
+
+### Gráficos Q-Q
+
+```{r}
+library(ggplot2)
+
+ggplot(d1, aes(sample=n)) + 
+  stat_qq() + 
+  stat_qq_line(col="red", distribution = stats::qnorm) +
+  xlab("Quantiles Teóricos") + ylab("Frecuencia") +
+  theme_bw()
+```
+
+```{r}
+p<-qplot(sample = n, data = d1, color=Contenedor)+theme_bw()+stat_qq_line()+
+   xlab("Quantiles Teóricos") + ylab("Frecuencia")
+p
+```
+
+```{r}
+shapiro.test(d1$n)
+```
+
+## Modelo lineal
+
+```{r}
+model = lm(n ~ Contenedor, data = d1)
+summary(model)
+```
+
+Para las observaciones del experimento de dist. normal, el p-value resulta ser significativo, pero el R\^2 es relativamente bajo, lo que quiere decir que hay mucha variabilidad pero la cantidad suficiente de datos explica que si hay una relación significativa.
+
+## Anova
+
+```{r car}
+library(car)
+
+Anova(model, # Tipo 3 es el por defecto
+      type = "II") # Suma de cuadrados
+```
+
+Este p-value tan pequeño indica indica que sí hay diferencia entre los contenedores, con un alto grado de significancia. Si la distribución fuera uniforme, esperaríamos tener la misma probabilidad para cada contenedor.
+
+### Supuesto de Normalidad
+
+#### Histograma de residuos
+
+```{r}
+x = residuals(model)
+
+library(rcompanion)
+
+plotNormalHistogram(x)
+```
+
+La distribución de residuos parece ser normal.
+
+#### Homogeneidad de la varianza
+
+```{r}
+plot(fitted(model), residuals(model))
+```
+
+Con confianza podemos decir que la varianza es similar.
+
+## Análisis post-hoc
+
+### Mínimos cuadrados para múltiples comparaciones
+
+```{r}
+library(multcompView)
+library(lsmeans)
+
+marginal = lsmeans(model, ~ Contenedor)
+
+# Ejecuta todas las comparaciones de pares para la variable
+# Algoritmo.
+pairs(marginal, adjust="tukey")
+
+```
+
+De esta tabla se pueden leer las comparaciones entre grupos, para revisar si son significativamente similares o diferentes. Sin embargo si la cantidad de factores es alta, hacer la comparación con la función "cld" es mas útil:
+
+```{r, include=FALSE}
+library(multcomp)
+```
+
+```{r}
+CLD = cld(marginal, 
+          alpha = 0.05, 
+          Letters = letters, 
+          adjust = "tukey")
+
+CLD # Nos muestra despliegue por letras
+```
+
+En este caso, CLD asigna una letra por cada tipo de agrupacion de factores similares, en este caso el grupo "a" contiene solamente al Algoritmo C, pero el grupo B, contiene a los algoritmos A y B.
+
+### Graficación de promedios y separación entre grupos
+
+```{r}
+CLD$Contenedor = factor(CLD$Contenedor, 
+                        levels = c("C1", "C2", "C3", 
+                                   "C4", "C5", "C6", 
+                                   "C7"))
+
+# Removemos los espacios en blanco en CLD
+CLD$.group=gsub(" ", "", CLD$.group)
+
+library(ggplot2)
+
+ggplot(
+  CLD, aes(x = Contenedor, y = lsmean, label = .group)) +
+  geom_point(shape = 15, size = 4) +
+  geom_errorbar(
+    aes(ymin = lower.CL, ymax = upper.CL), 
+    width = 0.2, size = 0.7) +
+  theme_bw() + 
+  theme(axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0)) +
+  ylab("Promedio del mínimo cuadrado\n Frecuencias por Contenedor") +
+  geom_text(nudge_x = c(0, 0, 0, 0, 0 ,0 ,0),
+            nudge_y = c(3, 3, 3, 3, 3, 3, 3),
+            color = "black")
+
+```
+
+-   Los bigotes representan los intervalos de confianza para las diferencias de mínimos cuadrados.
+
+## Conclusión
+
+
+# Experimento 2: Distribución Uniforme
+
+```{r}
+uniforme = Data_raw %>% 
+  filter(Distribucion == "Uniforme") %>%
+  dplyr::select(C1, C2, C3, C4, C5, C6, C7)
+
+summary(uniforme)
+```
+
+## Preprocesamiento
+
+Cada fila se divide en múltiples filas, una por contenedor
+
+```{r}
+library(tidyr)
+d2 = gather(uniforme, "Contenedor", "n", 1:7, factor_key=TRUE,)
+```
+
+## Visualización de los datos
+
+### Histograma de promedios
+
+```{r}
+Summarize(n ~ Contenedor,
+          data = d2, digits = 4)
+
+d2_summary = d2 %>%
+  group_by(Contenedor) %>%
+  summarise(avg = mean(n))
+
+```
+
+```{r}
+barplot(height=d2_summary$avg, names=d2_summary$Contenedor,main = "Medias por contenedor. Exp. 2", xlab = "Contenedor", ylab = "Frecuencia")
+```
+
+### Diagrama de cajas
+
+En este gráfico los bigotes representan el rango:
+
+```{r}
+M = tapply(d2$n,
+           INDEX = d2$Contenedor,
+           FUN = mean)
+boxplot(n ~ Contenedor,ylab= "Frecuencia",
+        data = d2)
+points(M, col="red", pch = "+",
+       cex = 2)
+```
+
+### Gráfico de promedios e intervalos de confianza
+
+Cálculo de los intervalos:
+
+```{r}
+Sum2= groupwiseMean(n ~ Contenedor, data = d2, conf = 0.95, digits = 3, 
+                    traditional = FALSE, percentile = TRUE)
+Sum2
+```
+
+Gráfico de I.C. (los bigotes representan el intervalo de confianza):
+
+```{r}
+ggplot(Sum2, aes(x = Contenedor, y = Mean)) +
+  geom_errorbar(
+    aes(ymin = Percentile.lower, ymax = Percentile.upper),
+    width = 0.05,
+    size = 0.5
+  ) +
+  geom_point(shape = 15, size = 4) +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold")) +
+  ylab("Frecuencia")
+```
+
+### Gráfico Q-Q
+
+```{r}
+library(ggplot2)
+
+ggplot(d2, aes(sample=n)) + 
+  stat_qq() + 
+  stat_qq_line(col="red", distribution = stats::qunif) +
+  xlab("Quantiles Teóricos") + ylab("Frecuencia") +
+  theme_bw()
+```
+
+Filtered w/o outliers
+
+```{r}
+p1<-qplot(sample = n, data = d2, color=Contenedor)+
+  theme_bw()+
+  stat_qq_line( distribution = stats::qunif) + 
+  xlab("Quantiles Teóricos") + ylab("Frecuencia")
+p1
+```
+
+### Prueba de Pearson-Chi\^2 para determinar uniformidad
+
+Dado: 1. $H_0$ (Nula): los datos presentan una distribución es uniforme. 2. $H-1$ (Alternativa): los datos no presentan una distribución no es uniforme.
+
+Se realiza la prueba de Pearson-Chi$^2$, con un alfa de $0.025$, para un $95%$ de confianza, y $6$ grados de confianza (dados los 7 contenedores del tablero):
+
+```{r}
+d2_sum = d2 %>%
+  group_by(Contenedor) %>%
+  summarise(sum_observaciones = sum(n))
+
+chisq.test(d2_sum$sum_observaciones)
+```
+
+##Conclusión
+
+Dado que el p-value de $3.604e^{-07}$ es menor que el alfa, se rechaza la $H_0$, por lo que los datos no siguen una distribución predominantemente uniforme.
+
+Esto se evidencia a la hora de ver el histograma, donde hay una inclinación predominante hacia la derecha.
+
+# Conlusiones finales
+
+Parece que existe una degradación de la planta entre mas se utiliza, esto debido a la calidad de los materiales utilizados, y el estrés que las bolinchas de vidrio ejercen con cada repetición de los experimentos.
+
+Para apoyar esta teoría, se realizo el test del Pearson-Chi$^2$ en los dos datasets recolectados en las dos sesiones de experimentos, por aparte, donde para el primer set de pruebas:
+
+```{r}
+Data_raw <- read_csv("datos_1.csv",
+                 col_types = list(col_integer(),col_character(),col_integer(),
+                                  col_integer(),col_integer(),col_integer(),
+                                  col_integer(),col_integer(),col_integer(),
+                                  col_integer()), 
+                 show_col_types = FALSE)
+
+Data_raw$Distribucion = factor(
+  Data_raw$Distribucion, 
+  levels = unique(Data_raw$Distribucion))
+
+d2_sum = Data_raw %>%
+  filter(Distribucion == "Uniforme") %>%
+  dplyr::select(C1:C7) %>%
+  gather("Contenedor", "n", 1:7, factor_key=TRUE) %>%
+  group_by(Contenedor) %>%
+  summarise(sum_observaciones = sum(n))
+
+chisq.test(d2_sum$sum_observaciones)
+```
+
+Y para el segundo dataset recolectado:
+
+```{r}
+Data_raw <- read_csv("datos_2.csv",
+                 col_types = list(col_integer(),col_character(),col_integer(),
+                                  col_integer(),col_integer(),col_integer(),
+                                  col_integer(),col_integer(),col_integer(),
+                                  col_integer()), 
+                 show_col_types = FALSE)
+
+Data_raw$Distribucion = factor(
+  Data_raw$Distribucion, 
+  levels = unique(Data_raw$Distribucion))
+
+d2_sum = Data_raw %>%
+  filter(Distribucion == "Uniforme") %>%
+  dplyr::select(C1:C7) %>%
+  gather("Contenedor", "n", 1:7, factor_key=TRUE) %>%
+  group_by(Contenedor) %>%
+  summarise(sum_observaciones = sum(n))
+
+chisq.test(d2_sum$sum_observaciones)
+```
+
+De aquí se puede apreciar que el p-value del dataset de la primera sesión es mayor al p-value del dataset recolectado el segundo día, lo cual se podría interpretar como una consecuencia a la degradación de la planta.
